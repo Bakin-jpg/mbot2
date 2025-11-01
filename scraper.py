@@ -8,11 +8,9 @@ from datetime import datetime
 
 async def scrape_kickass_anime_all_years():
     """
-    Scrape data anime dari kickass-anime.ru untuk SEMUA tahun.
-    OPTIMIZED FOR GITHUB ACTIONS
+    Scrape data anime dari kickass-anime.ru dengan FILTER YEAR yang benar.
     """
     async with async_playwright() as p:
-        # Install browser dulu buat GitHub Actions
         browser = await p.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-dev-shm-usage']
@@ -29,36 +27,24 @@ async def scrape_kickass_anime_all_years():
             base_url = "https://kickass-anime.ru"
             print("🚀 Membuka halaman anime...")
             
-            # Pergi ke URL dengan timeout yang cukup
             await page.goto(f"{base_url}/anime", wait_until="domcontentloaded", timeout=60000)
             
-            # Tunggu sampai data JavaScript loaded
+            # Tunggu data JavaScript
             print("⏳ Menunggu data JavaScript load...")
+            await page.wait_for_selector(".show-item", timeout=30000)
             
-            # Tunggu element utama
-            try:
-                await page.wait_for_selector(".show-item", timeout=30000)
-                print("✅ Element anime ditemukan")
-            except:
-                print("⚠️  Element anime tidak ditemukan, coba cara lain...")
+            # DAPATKAN TAHUN YANG SEDANG DIFILTER
+            current_year = await get_current_filtered_year(page)
+            print(f"📅 Tahun yang sedang difilter: {current_year}")
             
-            # Extract data dari JavaScript - METHOD UTAMA
-            print("🔍 Mencoba extract data dari JavaScript window.KAA...")
-            
-            anime_data = await extract_data_from_javascript(page, base_url)
+            # Extract data dengan FILTER YEAR
+            print("🔍 Extract data dengan filter tahun...")
+            anime_data = await extract_data_with_year_filter(page, base_url, current_year)
             
             if anime_data:
-                print(f"🎉 Berhasil extract {len(anime_data)} anime dari JavaScript")
-                await save_anime_data(anime_data)
+                print(f"🎉 Berhasil extract {len(anime_data)} anime untuk tahun {current_year}")
+                await save_anime_data(anime_data, current_year)
                 return anime_data
-            
-            # Fallback ke manual scraping
-            print("🔄 Fallback ke metode scraping manual...")
-            manual_data = await scrape_manually_simple(page, base_url)
-            
-            if manual_data:
-                await save_anime_data(manual_data)
-                return manual_data
             
             return []
             
@@ -68,25 +54,53 @@ async def scrape_kickass_anime_all_years():
         finally:
             await browser.close()
 
-async def extract_data_from_javascript(page, base_url):
+async def get_current_filtered_year(page):
     """
-    Extract data anime langsung dari JavaScript window object.
-    Ini cara PALING EFEKTIF karena data sudah ada di JavaScript.
+    Dapatkan tahun yang sedang difilter di halaman.
     """
     try:
-        # Tunggu dulu sampai window.KAA tersedia
-        await page.wait_for_function('window.KAA && window.KAA.data', timeout=15000)
-        print("✅ window.KAA ditemukan")
+        # Cari chip year yang active
+        active_year_chip = await page.query_selector('.v-chip--active .v-chip__content')
+        if active_year_chip:
+            year_text = await active_year_chip.inner_text()
+            if year_text.isdigit():
+                return int(year_text)
         
-        # Execute JavaScript untuk ambil data dari window.KAA
-        js_code = """
-        () => {
-            try {
-                if (window.KAA && window.KAA.data && window.KAA.data[0] && window.KAA.data[0].shows) {
-                    const shows = window.KAA.data[0].shows;
-                    console.log('Found', shows.length, 'shows in KAA');
+        # Fallback: cari dari URL atau element lain
+        current_url = page.url
+        if 'year=' in current_url:
+            year_match = re.search(r'year=(\d{4})', current_url)
+            if year_match:
+                return int(year_match.group(1))
+        
+        # Default ke tahun terbaru
+        return 2024
+        
+    except Exception as e:
+        print(f"❌ Gagal detect tahun: {e}")
+        return 2024
+
+async def extract_data_with_year_filter(page, base_url, target_year):
+    """
+    Extract data anime dengan filter tahun yang spesifik.
+    """
+    try:
+        # Tunggu sampai window.KAA tersedia
+        await page.wait_for_function('window.KAA && window.KAA.data', timeout=15000)
+        
+        # Execute JavaScript dengan FILTER YEAR
+        js_code = f"""
+        () => {{
+            try {{
+                if (window.KAA && window.KAA.data && window.KAA.data[0] && window.KAA.data[0].shows) {{
+                    const allShows = window.KAA.data[0].shows;
+                    console.log('Total shows in KAA:', allShows.length);
                     
-                    return shows.map(show => ({
+                    // FILTER BY YEAR - ini yang penting!
+                    const filteredShows = allShows.filter(show => show.year === {target_year});
+                    console.log('Shows for year {target_year}:', filteredShows.length);
+                    
+                    return filteredShows.map(show => ({{
                         slug: show.slug || '',
                         title: show.title || '',
                         title_en: show.title_en || '',
@@ -97,29 +111,33 @@ async def extract_data_from_javascript(page, base_url):
                         genres: show.genres || [],
                         locales: show.locales || [],
                         episode_duration: show.episode_duration || 0,
-                        poster: show.poster || {},
+                        poster: show.poster || {{}},
                         watch_uri: show.watch_uri || ''
-                    }));
-                }
+                    }}));
+                }}
                 return null;
-            } catch (e) {
+            }} catch (e) {{
                 console.error('Error in KAA extraction:', e);
                 return null;
-            }
-        }
+            }}
+        }}
         """
         
         raw_data = await page.evaluate(js_code)
         
         if not raw_data:
-            print("❌ Data tidak ditemukan di window.KAA")
+            print(f"❌ Tidak ada data untuk tahun {target_year}")
             return None
         
-        print(f"📊 Mendapatkan {len(raw_data)} anime dari JavaScript")
+        print(f"📊 Mendapatkan {len(raw_data)} anime untuk tahun {target_year}")
         
         processed_data = []
-        for item in raw_data[:20]:  # Batasi 20 anime untuk GitHub Actions
+        for item in raw_data:
             try:
+                # Validasi tahun - pastikan sesuai filter
+                if item.get('year') != target_year:
+                    continue
+                
                 # Build URLs
                 detail_url = f"{base_url}/{item['slug']}" if item.get('slug') else ""
                 
@@ -159,90 +177,120 @@ async def extract_data_from_javascript(page, base_url):
         return processed_data
         
     except Exception as e:
-        print(f"❌ Gagal extract data JavaScript: {e}")
+        print(f"❌ Gagal extract data dengan filter: {e}")
         return None
 
-async def scrape_manually_simple(page, base_url):
+async def scrape_multiple_years():
     """
-    Simple manual scraping fallback untuk GitHub Actions.
+    Scrape data untuk multiple years secara sequential.
     """
-    print("🔄 Memulai simple manual scraping...")
-    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-dev-shm-usage']
+        )
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080}
+        )
+        
+        page = await context.new_page()
+        
+        try:
+            base_url = "https://kickass-anime.ru"
+            all_data = []
+            
+            # Tahun yang ingin di-scrape (dari terbaru)
+            target_years = [2024, 2023, 2022, 2021, 2020]
+            
+            for year in target_years:
+                print(f"\n{'='*50}")
+                print(f"🎬 MEMPROSES TAHUN: {year}")
+                print(f"{'='*50}")
+                
+                try:
+                    # Pergi ke halaman anime
+                    await page.goto(f"{base_url}/anime", wait_until="domcontentloaded", timeout=60000)
+                    
+                    # Apply filter tahun
+                    success = await apply_year_filter(page, year)
+                    if not success:
+                        print(f"❌ Gagal apply filter untuk tahun {year}")
+                        continue
+                    
+                    # Tunggu data load
+                    await page.wait_for_selector(".show-item", timeout=15000)
+                    
+                    # Extract data dengan filter
+                    year_data = await extract_data_with_year_filter(page, base_url, year)
+                    
+                    if year_data:
+                        all_data.extend(year_data)
+                        print(f"✅ Tahun {year}: {len(year_data)} anime")
+                    else:
+                        print(f"⚠️  Tidak ada data untuk tahun {year}")
+                    
+                    # Delay antar request
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    print(f"❌ Gagal proses tahun {year}: {e}")
+                    continue
+            
+            if all_data:
+                await save_anime_data(all_data, "multiple_years")
+            
+            return all_data
+            
+        except Exception as e:
+            print(f"💥 ERROR: {e}")
+            return []
+        finally:
+            await browser.close()
+
+async def apply_year_filter(page, year):
+    """
+    Apply filter tahun di UI.
+    """
     try:
-        # Tunggu anime items
-        await page.wait_for_selector(".show-item", timeout=15000)
-        anime_items = await page.query_selector_all(".show-item")
+        # Klik tombol Year
+        year_btn = await page.query_selector("button:has-text('Year')")
+        if not year_btn:
+            print("❌ Tombol Year tidak ditemukan")
+            return False
         
-        print(f"📊 Menemukan {len(anime_items)} anime items")
+        await year_btn.click()
+        await asyncio.sleep(2)
         
-        scraped_data = []
+        # Cari dan klik tahun yang diinginkan
+        year_option = await page.query_selector(f'.v-chip .v-chip__content:has-text("{year}")')
+        if not year_option:
+            print(f"❌ Opsi tahun {year} tidak ditemukan")
+            # Tutup dropdown
+            close_btn = await page.query_selector("button:has-text('Close')")
+            if close_btn:
+                await close_btn.click()
+            return False
         
-        for i, item in enumerate(anime_items[:10]):  # Batasi 10 untuk GitHub Actions
-            try:
-                # Get title
-                title_elem = await item.query_selector(".show-title span")
-                title = await title_elem.inner_text() if title_elem else f"Anime {i+1}"
-                
-                # Get poster
-                poster_elem = await item.query_selector(".v-image__image--cover")
-                poster_url = "Tidak tersedia"
-                if poster_elem:
-                    style = await poster_elem.get_attribute("style")
-                    if style and 'url(' in style:
-                        url_match = re.search(r'url\(["\']?([^"\'\)]+)["\']?\)', style)
-                        if url_match:
-                            poster_url = urljoin(base_url, url_match.group(1))
-                
-                # Get detail link
-                detail_link = await item.query_selector("a.v-card--link")
-                detail_url = ""
-                if detail_link:
-                    href = await detail_link.get_attribute("href")
-                    detail_url = urljoin(base_url, href) if href else ""
-                
-                # Get year from badge
-                year_badge = await item.query_selector(".poster-badge .v-chip__content")
-                year = 2024
-                if year_badge:
-                    year_text = await year_badge.inner_text()
-                    if year_text.isdigit():
-                        year = int(year_text)
-                
-                # Get genres
-                genre_elems = await item.query_selector_all(".v-chip--outlined .v-chip__content")
-                genres = []
-                for genre_elem in genre_elems:
-                    genre_text = await genre_elem.inner_text()
-                    if not genre_text.isdigit() and genre_text not in ['TV', 'SUB', 'DUB', 'MOVIE', 'SPECIAL', 'OVA']:
-                        genres.append(genre_text)
-                
-                anime_info = {
-                    "judul": title,
-                    "tahun": year,
-                    "genre": genres,
-                    "url_poster": poster_url,
-                    "url_detail": detail_url,
-                    "url_watch": None,
-                    "sinopsis": "Scraped from list view",
-                    "scraped_at": datetime.now().isoformat()
-                }
-                
-                scraped_data.append(anime_info)
-                print(f"✅ {title} ({year})")
-                
-            except Exception as e:
-                print(f"❌ Gagal process anime {i+1}: {e}")
-                continue
-                
-        return scraped_data
+        await year_option.click()
+        await asyncio.sleep(2)
+        
+        # Tutup dropdown
+        close_btn = await page.query_selector("button:has-text('Close')")
+        if close_btn:
+            await close_btn.click()
+        
+        await asyncio.sleep(3)  # Tunggu data reload
+        return True
         
     except Exception as e:
-        print(f"❌ Gagal simple manual scraping: {e}")
-        return []
+        print(f"❌ Gagal apply filter: {e}")
+        return False
 
-async def save_anime_data(data):
+async def save_anime_data(data, source):
     """Save anime data to JSON file."""
-    filename = 'anime_data_kickass.json'
+    filename = f'anime_data_{source}.json'
     
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -251,11 +299,11 @@ async def save_anime_data(data):
         print(f"💾 Data disimpan ke {filename}")
         print(f"📊 Total {len(data)} anime")
         
-        # Print summary
+        # Stats
         years = list(set([d['tahun'] for d in data if d.get('tahun')]))
-        print(f"📅 Tahun: {sorted(years)}")
+        print(f"📅 Tahun dalam data: {sorted(years)}")
         
-        # Print sample data
+        # Sample data
         if data:
             print(f"\n📝 Sample data:")
             for i, anime in enumerate(data[:3]):
@@ -265,19 +313,25 @@ async def save_anime_data(data):
         print(f"❌ Gagal save data: {e}")
 
 async def main():
-    """Main function - OPTIMIZED FOR GITHUB ACTIONS"""
-    print("🚀 KICKASS ANIME SCRAPER - GITHUB ACTIONS OPTIMIZED")
+    """Main function."""
+    print("🚀 KICKASS ANIME SCRAPER - YEAR FILTER FIXED")
     print("=" * 60)
-    print("Strategi:")
-    print("1. Extract langsung dari JavaScript window.KAA (FAST)")
-    print("2. Fallback ke simple manual scraping")
-    print("3. Batasi data untuk GitHub Actions")
+    print("Pilih mode:")
+    print("1. Scrape tahun saat ini (cepat)")
+    print("2. Scrape multiple years (lengkap)")
     print("=" * 60)
+    
+    # Untuk GitHub Actions, pilih mode 2 (multiple years)
+    choice = 2
     
     start_time = datetime.now()
-    data = await scrape_kickass_anime_all_years()
-    end_time = datetime.now()
     
+    if choice == 1:
+        data = await scrape_kickass_anime_all_years()
+    else:
+        data = await scrape_multiple_years()
+    
+    end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
     
     if data:
@@ -285,17 +339,12 @@ async def main():
         print(f"⏱️  Durasi: {duration:.2f} detik")
         print(f"📊 Total anime: {len(data)}")
         
-        # Stats
-        genres_count = {}
-        for anime in data:
-            for genre in anime.get('genre', []):
-                genres_count[genre] = genres_count.get(genre, 0) + 1
-        
-        print(f"🏷️  Genre unik: {len(genres_count)}")
-        print(f"📅 Rentang tahun: {min([d['tahun'] for d in data])}-{max([d['tahun'] for d in data])}")
+        # Validasi tahun
+        years = list(set([d['tahun'] for d in data]))
+        print(f"✅ Tahun yang berhasil di-scrape: {sorted(years)}")
         
     else:
-        print("\n❌ SCRAPING GAGAL - Tidak ada data yang didapat")
+        print("\n❌ SCRAPING GAGAL!")
 
 if __name__ == "__main__":
     asyncio.run(main())
