@@ -1,0 +1,39 @@
+name: Scrape Anime Data
+
+on:
+  schedule:
+    # Jalankan setiap 6 jam
+    - cron: '0 */6 * * *'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  scrape-anime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install playwright
+        playwright install chromium
+        
+    - name: Run scraper
+      run: |
+        python scraper.py
+        
+    - name: Commit and push if changed
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add anime_data_by_year.json scraping_progress.json
+        git diff --staged --quiet || git commit -m "Update anime data [skip ci]"
+        git push
