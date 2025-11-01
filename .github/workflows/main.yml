@@ -56,7 +56,7 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
           # Tambahkan file hasil scrape ke staging area
-          git add anime_data.json
+          git add anime_data_all_years.json
           
           # Lakukan commit. "|| exit 0" mencegah workflow gagal jika tidak ada perubahan file.
           git commit -m "Update anime data" || exit 0
